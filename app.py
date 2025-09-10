@@ -632,13 +632,13 @@ def main():
     init_ok = _drive_init()
     with st.sidebar.expander("Cloud Sync (Google Drive)"):
         # Debug signals (safe — does not leak secrets)
-        try:
-            gdr = st.secrets.get("gdrive", {})
-            st.caption(f"DEBUG → gdrive keys: {list(gdr.keys())}")
-            st.caption(f"DEBUG → has service_account table: {'service_account' in gdr}")
-            st.caption(f"DEBUG → has file_id: {bool(gdr.get('file_id'))}")
-        except Exception as _e:
-            st.caption(f"DEBUG → cannot read secrets: {_e}")
+       # try:
+        #    gdr = st.secrets.get("gdrive", {})
+         #   st.caption(f"DEBUG → gdrive keys: {list(gdr.keys())}")
+          #  st.caption(f"DEBUG → has service_account table: {'service_account' in gdr}")
+           # st.caption(f"DEBUG → has file_id: {bool(gdr.get('file_id'))}")
+        #except Exception as _e:
+         #   st.caption(f"DEBUG → cannot read secrets: {_e}")
 
         if init_ok:
             if drive_pull(DB_PATH):
