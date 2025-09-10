@@ -554,6 +554,17 @@ def ui_payslip():
 def main():
     st.set_page_config(page_title="Payroll App (Drive Backup)", layout="wide")
 
+    
+    # DEBUG block – temporary
+    try:
+        gdr = st.secrets.get("gdrive", {})
+        with st.sidebar.expander("Cloud Sync (Google Drive)"):
+            st.caption(f"DEBUG → gdrive keys: {list(gdr.keys())}")
+            st.caption(f"DEBUG → has service_account table: {'service_account' in gdr}")
+            st.caption(f"DEBUG → has file_id: {bool(gdr.get('file_id'))}")
+    except Exception as _e:
+        st.sidebar.error(f"DEBUG → cannot read secrets: {_e}")
+        
     # Drive restore/backup controls
     _drive_init()
     with st.sidebar.expander("Cloud Sync (Google Drive)"):
