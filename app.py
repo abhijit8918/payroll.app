@@ -1,15 +1,15 @@
 # app.py — Payroll (Streamlit + SQLite) with Google Drive Restore/Backup
 # ---------------------------------------------------------------------
-# What’s included
+# Features:
 # - Employees (Add, Edit, Delete)
-# - Attendance (Single), Attendance (Calendar click-to-set)
+# - Attendance (Single + Calendar click-to-set + quick ranges)
 # - Bonuses, Deductions, Payroll, Payslip
 # - Google Drive sync:
 #     * Pull (restore) at startup + "Restore now" button
 #     * "Backup now" button
 #     * Optional auto-backup after each write (toggle via secrets)
 #
-# Secrets formats (Streamlit → Settings → Secrets) — either one works:
+# Streamlit Secrets (either format works):
 #
 # A) JSON blob (easiest)
 # [gdrive]
@@ -49,9 +49,10 @@ import time
 import calendar
 from datetime import date
 
-# Google Drive
-from pydrive2.auth import ServiceAccountCredentials
+# ---- Google Drive (fixed) ----
+from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
+from oauth2client.service_account import ServiceAccountCredentials
 
 DB_PATH = "payroll.db"
 LEAVE_DIVISOR = 30
@@ -105,10 +106,16 @@ def _drive_init():
         if "private_key" in sa_dict and "\\n" in sa_dict["private_key"]:
             sa_dict["private_key"] = sa_dict["private_key"].replace("\\n", "\n")
 
+        # ---- FIX: build GoogleAuth with service-account creds
         creds = ServiceAccountCredentials.from_json_keyfile_dict(
             sa_dict, scopes=["https://www.googleapis.com/auth/drive"]
         )
-        _drive = GoogleDrive(creds)
+        gauth = GoogleAuth()
+        gauth.credentials = creds
+        drive = GoogleDrive(gauth)
+        # ----------------------------
+
+        _drive = drive
         GDRIVE_ENABLED = True
         return True
     except Exception as e:
