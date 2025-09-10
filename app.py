@@ -27,7 +27,7 @@ LEAVE_DIVISOR = 30
 
 # ------------------ Google Drive helpers ------------------
 
-GDRIVE_ENABLED = True
+GDRIVE_ENABLED = False
 GDRIVE_FILE_ID = None
 AUTO_BACKUP = False
 _drive = None
