@@ -1,5 +1,7 @@
 # app.py — Payroll (SQLite + Streamlit) with Google Drive sync + PDF exports
-# Row-level Edit/Delete actions + Confirmation panel before delete (no typing EmpID)
+# Row-level Edit/Delete + Confirmation prompts + Fixes:
+# - Use r["name"] (not r.name) so names show correctly
+# - Edit buttons toggle open/close; saving closes editor
 
 import streamlit as st
 import sqlite3
@@ -46,7 +48,7 @@ def ensure_state_keys():
         "editing_emp": None,
         "editing_bonus": None,
         "editing_ded": None,
-        "pending_delete": None,  # dict: {'type': 'employee'|'bonus'|'deduction', ...}
+        "pending_delete": None,  # {'type': 'employee'|'bonus'|'deduction', ...}
     }.items():
         if k not in st.session_state:
             st.session_state[k] = v
@@ -197,13 +199,6 @@ def execute(sql, params=()):
 # ------------------ DELETE CONFIRMATION PANEL ------------------
 
 def render_delete_confirmation():
-    """
-    Shows a confirmation panel when st.session_state.pending_delete is set.
-    Expected payloads:
-      - Employee: {'type':'employee', 'emp_id':..., 'name':..., 'role':..., 'active':..., 'counts':{'att':n,'bon':n,'ded':n}}
-      - Bonus:    {'type':'bonus', 'id':..., 'day':..., 'emp_id':..., 'amount':..., 'note':...}
-      - Deduction:{'type':'deduction', 'id':..., 'day':..., 'emp_id':..., 'dtype':..., 'amount':..., 'note':...}
-    """
     pdp = st.session_state.get("pending_delete")
     if not pdp:
         return
@@ -225,7 +220,6 @@ def render_delete_confirmation():
             )
             cc1, cc2 = st.columns(2)
             if cc1.button("✅ Confirm Delete (Employee + all related)"):
-                # cascade delete
                 execute("DELETE FROM attendance WHERE emp_id=?", (info['emp_id'],))
                 execute("DELETE FROM bonuses    WHERE emp_id=?", (info['emp_id'],))
                 execute("DELETE FROM deductions WHERE emp_id=?", (info['emp_id'],))
@@ -264,7 +258,6 @@ def render_delete_confirmation():
             if cc2.button("❌ Cancel"):
                 st.session_state.pending_delete = None
                 st.info("Cancelled.")
-
     st.markdown("---")
 
 # ------------------ EMPLOYEES (add + row actions) ------------------
@@ -275,63 +268,67 @@ def _employee_row_actions(df):
         return
 
     st.markdown("### Employees List")
-    header = st.columns([1.4, 2.6, 1.2, 1.2, 1.0, 0.9, 1.2])  # + Actions wider
+    header = st.columns([1.4, 2.6, 1.2, 1.2, 1.0, 0.9, 1.2])
     for i, h in enumerate(["EmpID", "Name", "Type", "Base/Rate", "Role", "Active", "Actions"]):
         header[i].markdown(f"**{h}**")
 
     for _, r in df.iterrows():
         col = st.columns([1.4, 2.6, 1.2, 1.2, 1.0, 0.9, 1.2])
-        col[0].write(r.emp_id)
-        col[1].write(r.name)
-        col[2].write(r.salary_type)
-        base_rate = r.monthly_salary if r.salary_type == "Monthly" else r.per_day_rate
+        col[0].write(r["emp_id"])
+        col[1].write(r["name"])  # fixed
+        col[2].write(r["salary_type"])
+        base_rate = r["monthly_salary"] if r["salary_type"] == "Monthly" else r["per_day_rate"]
         col[3].write(money(base_rate or 0))
-        col[4].write(r.role if pd.notna(r.role) else "")
-        col[5].write("✅" if r.active else "—")
+        col[4].write(r["role"] if pd.notna(r["role"]) else "")
+        col[5].write("✅" if r["active"] else "—")
 
-        e_key = f"emp_edit_{r.emp_id}"
-        d_key = f"emp_del_{r.emp_id}"
+        e_key = f"emp_edit_{r['emp_id']}"
+        d_key = f"emp_del_{r['emp_id']}"
         c_edit, c_del = col[6].columns(2)
-        edit_clicked = c_edit.button("✏️", key=e_key, help="Edit")
+
+        edit_clicked = c_edit.button("✏️", key=e_key, help="Edit (toggle)")
         del_clicked  = c_del.button("🗑", key=d_key, help="Delete")
 
+        # toggle editor open/closed
         if edit_clicked:
-            st.session_state.editing_emp = r.emp_id
+            if st.session_state.editing_emp == r["emp_id"]:
+                st.session_state.editing_emp = None
+            else:
+                st.session_state.editing_emp = r["emp_id"]
 
         if del_clicked:
-            # Build confirmation payload with counts
-            cnt_att = df_from_query("SELECT COUNT(*) AS c FROM attendance WHERE emp_id=?", (r.emp_id,)).iloc[0]["c"]
-            cnt_bon = df_from_query("SELECT COUNT(*) AS c FROM bonuses WHERE emp_id=?",   (r.emp_id,)).iloc[0]["c"]
-            cnt_ded = df_from_query("SELECT COUNT(*) AS c FROM deductions WHERE emp_id=?", (r.emp_id,)).iloc[0]["c"]
+            cnt_att = df_from_query("SELECT COUNT(*) AS c FROM attendance WHERE emp_id=?", (r["emp_id"],)).iloc[0]["c"]
+            cnt_bon = df_from_query("SELECT COUNT(*) AS c FROM bonuses WHERE emp_id=?",   (r["emp_id"],)).iloc[0]["c"]
+            cnt_ded = df_from_query("SELECT COUNT(*) AS c FROM deductions WHERE emp_id=?", (r["emp_id"],)).iloc[0]["c"]
             st.session_state.pending_delete = {
                 "type": "employee",
-                "emp_id": r.emp_id,
-                "name": r.name,
-                "role": r.role if pd.notna(r.role) else "",
-                "active": bool(r.active),
+                "emp_id": r["emp_id"],
+                "name": r["name"],
+                "role": r["role"] if pd.notna(r["role"]) else "",
+                "active": bool(r["active"]),
                 "counts": {"att": int(cnt_att), "bon": int(cnt_bon), "ded": int(cnt_ded)},
             }
 
         # inline edit form
-        if st.session_state.editing_emp == r.emp_id:
-            with st.form(f"edit_emp_form_{r.emp_id}"):
+        if st.session_state.editing_emp == r["emp_id"]:
+            with st.form(f"edit_emp_form_{r['emp_id']}"):
                 c1, c2, c3 = st.columns(3)
-                name   = c1.text_input("Name *", value=r.name)
-                role   = c2.text_input("Role", value=r.role if pd.notna(r.role) else "")
-                active = c3.checkbox("Active", value=bool(r.active))
+                name   = c1.text_input("Name *", value=r["name"])
+                role   = c2.text_input("Role", value=r["role"] if pd.notna(r["role"]) else "")
+                active = c3.checkbox("Active", value=bool(r["active"]))
 
                 d1, d2, d3 = st.columns(3)
                 salary_type = d1.selectbox("Salary Type *", ["Monthly","PerDay"],
-                                           index=0 if r.salary_type=="Monthly" else 1)
+                                           index=0 if r["salary_type"]=="Monthly" else 1)
                 monthly_salary = d2.number_input("Monthly Salary", min_value=0.0, step=100.0, format="%.2f",
-                                                 value=float(r.monthly_salary or 0))
+                                                 value=float(r["monthly_salary"] or 0))
                 per_day_rate   = d3.number_input("Per-Day Rate", min_value=0.0, step=10.0, format="%.2f",
-                                                 value=float(r.per_day_rate or 0))
+                                                 value=float(r["per_day_rate"] or 0))
                 e1, e2 = st.columns(2)
                 doj  = e1.date_input("Date of Joining",
-                                     value=(pd.to_datetime(r.doj).date() if pd.notna(r.doj) and str(r.doj)!=""
+                                     value=(pd.to_datetime(r["doj"]).date() if pd.notna(r["doj"]) and str(r["doj"])!=""
                                             else date.today()))
-                bank = e2.text_input("Bank / UPI", value=r.bank if pd.notna(r.bank) else "")
+                bank = e2.text_input("Bank / UPI", value=r["bank"] if pd.notna(r["bank"]) else "")
                 save = st.form_submit_button("💾 Save")
             if save:
                 execute("""
@@ -341,9 +338,9 @@ def _employee_row_actions(df):
                 """, (name, role, salary_type,
                       monthly_salary if salary_type=="Monthly" else None,
                       per_day_rate   if salary_type=="PerDay"  else None,
-                      doj.isoformat(), 1 if active else 0, bank, r.emp_id))
+                      doj.isoformat(), 1 if active else 0, bank, r["emp_id"]))
                 st.success("Updated.")
-                st.session_state.editing_emp = None
+                st.session_state.editing_emp = None  # close editor after save
                 st.experimental_rerun()
 
 def ui_employees():
@@ -512,39 +509,43 @@ def _row_actions_bonuses(df):
 
     for _, r in df.iterrows():
         cols = st.columns([1.0,1.0,1.2,2.0,1.2])
-        cols[0].write(r.id)
-        cols[1].write(r.day)
-        cols[2].write(r.emp_id)
-        cols[3].write(f"{r.note if pd.notna(r.note) else ''}  —  {money(r.amount)}")
+        cols[0].write(r["id"])
+        cols[1].write(r["day"])
+        cols[2].write(r["emp_id"])
+        cols[3].write(f"{r['note'] if pd.notna(r['note']) else ''}  —  {money(r['amount'])}")
 
-        e_btn = cols[4].button("✏️", key=f"bon_edit_{r.id}", help="Edit")
-        d_btn = cols[4].button("🗑", key=f"bon_del_{r.id}", help="Delete")
+        e_btn = cols[4].button("✏️", key=f"bon_edit_{r['id']}", help="Edit (toggle)")
+        d_btn = cols[4].button("🗑", key=f"bon_del_{r['id']}", help="Delete")
 
+        # toggle editor
         if e_btn:
-            st.session_state.editing_bonus = int(r.id)
+            if st.session_state.editing_bonus == int(r["id"]):
+                st.session_state.editing_bonus = None
+            else:
+                st.session_state.editing_bonus = int(r["id"])
 
         if d_btn:
             st.session_state.pending_delete = {
                 "type": "bonus",
-                "id": int(r.id),
-                "day": r.day,
-                "emp_id": r.emp_id,
-                "amount": float(r.amount),
-                "note": r.note if pd.notna(r.note) else "",
+                "id": int(r["id"]),
+                "day": r["day"],
+                "emp_id": r["emp_id"],
+                "amount": float(r["amount"]),
+                "note": r["note"] if pd.notna(r["note"]) else "",
             }
 
-        if st.session_state.editing_bonus == int(r.id):
-            with st.form(f"bon_edit_form_{r.id}"):
+        if st.session_state.editing_bonus == int(r["id"]):
+            with st.form(f"bon_edit_form_{r['id']}"):
                 c1,c2,c3 = st.columns(3)
-                day    = c1.date_input("Date", pd.to_datetime(r.day).date())
-                emp    = c2.text_input("Emp ID", value=r.emp_id)
+                day    = c1.date_input("Date", pd.to_datetime(r["day"]).date())
+                emp    = c2.text_input("Emp ID", value=r["emp_id"])
                 amount = c3.number_input("Amount", min_value=0.0, step=100.0, format="%.2f",
-                                         value=float(r.amount))
-                note   = st.text_input("Note", value=r.note if pd.notna(r.note) else "")
+                                         value=float(r["amount"]))
+                note   = st.text_input("Note", value=r["note"] if pd.notna(r["note"]) else "")
                 save   = st.form_submit_button("💾 Save")
             if save:
                 execute("UPDATE bonuses SET day=?, emp_id=?, amount=?, note=? WHERE id=?",
-                        (day.isoformat(), emp, amount, note, int(r.id)))
+                        (day.isoformat(), emp, amount, note, int(r["id"])))
                 st.success("Updated.")
                 st.session_state.editing_bonus = None
                 st.experimental_rerun()
@@ -581,42 +582,46 @@ def _row_actions_deductions(df):
 
     for _, r in df.iterrows():
         cols = st.columns([1.0,1.0,1.2,1.0,2.0,1.2])
-        cols[0].write(r.id)
-        cols[1].write(r.day)
-        cols[2].write(r.emp_id)
-        cols[3].write(r.dtype)
-        cols[4].write(f"{r.note if pd.notna(r.note) else ''}  —  {money(r.amount)}")
+        cols[0].write(r["id"])
+        cols[1].write(r["day"])
+        cols[2].write(r["emp_id"])
+        cols[3].write(r["dtype"])
+        cols[4].write(f"{r['note'] if pd.notna(r['note']) else ''}  —  {money(r['amount'])}")
 
-        e_btn = cols[5].button("✏️", key=f"ded_edit_{r.id}", help="Edit")
-        d_btn = cols[5].button("🗑", key=f"ded_del_{r.id}", help="Delete")
+        e_btn = cols[5].button("✏️", key=f"ded_edit_{r['id']}", help="Edit (toggle)")
+        d_btn = cols[5].button("🗑", key=f"ded_del_{r['id']}", help="Delete")
 
+        # toggle editor
         if e_btn:
-            st.session_state.editing_ded = int(r.id)
+            if st.session_state.editing_ded == int(r["id"]):
+                st.session_state.editing_ded = None
+            else:
+                st.session_state.editing_ded = int(r["id"])
 
         if d_btn:
             st.session_state.pending_delete = {
                 "type": "deduction",
-                "id": int(r.id),
-                "day": r.day,
-                "emp_id": r.emp_id,
-                "dtype": r.dtype,
-                "amount": float(r.amount),
-                "note": r.note if pd.notna(r.note) else "",
+                "id": int(r["id"]),
+                "day": r["day"],
+                "emp_id": r["emp_id"],
+                "dtype": r["dtype"],
+                "amount": float(r["amount"]),
+                "note": r["note"] if pd.notna(r["note"]) else "",
             }
 
-        if st.session_state.editing_ded == int(r.id):
-            with st.form(f"ded_edit_form_{r.id}"):
+        if st.session_state.editing_ded == int(r["id"]):
+            with st.form(f"ded_edit_form_{r['id']}"):
                 c1,c2,c3,c4 = st.columns(4)
-                day    = c1.date_input("Date", pd.to_datetime(r.day).date())
-                emp    = c2.text_input("Emp ID", value=r.emp_id)
-                dtype  = c3.selectbox("Type", ["Advance","Other"], index=0 if r.dtype=="Advance" else 1)
+                day    = c1.date_input("Date", pd.to_datetime(r["day"]).date())
+                emp    = c2.text_input("Emp ID", value=r["emp_id"])
+                dtype  = c3.selectbox("Type", ["Advance","Other"], index=0 if r["dtype"]=="Advance" else 1)
                 amount = c4.number_input("Amount", min_value=0.0, step=100.0, format="%.2f",
-                                         value=float(r.amount))
-                note   = st.text_input("Note", value=r.note if pd.notna(r.note) else "")
+                                         value=float(r["amount"]))
+                note   = st.text_input("Note", value=r["note"] if pd.notna(r["note"]) else "")
                 save   = st.form_submit_button("💾 Save")
             if save:
                 execute("UPDATE deductions SET day=?, emp_id=?, dtype=?, amount=?, note=? WHERE id=?",
-                        (day.isoformat(), emp, dtype, amount, note, int(r.id)))
+                        (day.isoformat(), emp, dtype, amount, note, int(r["id"])))
                 st.success("Updated.")
                 st.session_state.editing_ded = None
                 st.experimental_rerun()
@@ -713,14 +718,15 @@ def pdf_payroll(df, year, month) -> bytes:
 
     y, x_pos = header()
     c.setFont("Helvetica", 9)
+    def money_fmt(v): return money(v)
     for _, r in df.iterrows():
         if y < 20*mm:
             c.showPage()
             y, x_pos = header()
             c.setFont("Helvetica",9)
         vals=[r["EmpID"], str(r["Name"])[:20], r["Type"], r["Present"], r["Half"], r["Absent"],
-              money(r["Base"]), money(r["LeaveDed"]), money(r["Bonus"]), money(r["Deduction"]),
-              money(r["Gross"]), money(r["Net"])]
+              money_fmt(r["Base"]), money_fmt(r["LeaveDed"]), money_fmt(r["Bonus"]), money_fmt(r["Deduction"]),
+              money_fmt(r["Gross"]), money_fmt(r["Net"])]
         for val,xi in zip(vals,x_pos): c.drawString(xi,y,str(val))
         y-=row_h
     c.setFont("Helvetica-Bold",10)
@@ -841,7 +847,7 @@ def ui_payslip():
 # ------------------ MAIN ------------------
 
 def main():
-    st.set_page_config(page_title="Payroll App (Drive + PDF + Confirm Delete)", layout="wide")
+    st.set_page_config(page_title="Payroll App (Drive + PDF + Confirm Delete + Fixes)", layout="wide")
     ensure_state_keys()
 
     # Drive controls
@@ -880,7 +886,7 @@ def main():
     st.title("💼 Payroll App")
     st.caption("Employees • Attendance • Calendar • Bonuses • Deductions • Payroll • Payslip • Drive backup")
 
-    # Global delete confirmation panel (always render near top)
+    # Global delete confirmation panel
     render_delete_confirmation()
 
     section = st.sidebar.radio(
