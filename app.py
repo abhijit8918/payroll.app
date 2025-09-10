@@ -42,19 +42,32 @@ def _drive_init():
         if not cfg:
             return
         GDRIVE_FILE_ID = cfg.get("file_id")
-        sa_json_str = cfg.get("service_account_json")
         AUTO_BACKUP = bool(cfg.get("auto_backup", False))
-        if not GDRIVE_FILE_ID or not sa_json_str:
+
+        sa_dict = None
+        # Method A: JSON string (service_account_json)
+        if "service_account_json" in cfg:
+            sa_json_str = cfg.get("service_account_json")
+            sa_dict = json.loads(sa_json_str)
+        # Method B: TOML table (service_account)
+        elif "service_account" in cfg:
+            sa_dict = dict(cfg.get("service_account"))
+
+        if not GDRIVE_FILE_ID or not sa_dict:
             return
-        creds_dict = json.loads(sa_json_str)
+
+        # Normalize private_key newlines if the JSON used \n
+        if "private_key" in sa_dict and "\\n" in sa_dict["private_key"]:
+            sa_dict["private_key"] = sa_dict["private_key"].replace("\\n", "\n")
+
         creds = ServiceAccountCredentials.from_json_keyfile_dict(
-            creds_dict,
-            scopes=["https://www.googleapis.com/auth/drive"]
+            sa_dict, scopes=["https://www.googleapis.com/auth/drive"]
         )
+        from pydrive2.drive import GoogleDrive
         _drive = GoogleDrive(creds)
         GDRIVE_ENABLED = True
     except Exception as e:
-        st.sidebar.warning(f"Drive init failed: {e}")
+        st.sidebar.error(f"Drive init failed: {e}")
         GDRIVE_ENABLED = False
 
 def drive_pull(local_path=DB_PATH):
