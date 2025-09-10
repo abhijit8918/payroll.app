@@ -567,35 +567,39 @@ def ui_payslip():
 def main():
     st.set_page_config(page_title="Payroll App (Drive Backup)", layout="wide")
 
-    
-    # DEBUG block – temporary
-    try:
-        gdr = st.secrets.get("gdrive", {})
-        with st.sidebar.expander("Cloud Sync (Google Drive)"):
+    # 1) Init Google Drive first
+    _drive_init()
+
+    # 2) One unified Cloud Sync expander (includes DEBUG temporarily)
+    with st.sidebar.expander("Cloud Sync (Google Drive)"):
+        # DEBUG (temporary)
+        try:
+            gdr = st.secrets.get("gdrive", {})
             st.caption(f"DEBUG → gdrive keys: {list(gdr.keys())}")
             st.caption(f"DEBUG → has service_account table: {'service_account' in gdr}")
             st.caption(f"DEBUG → has file_id: {bool(gdr.get('file_id'))}")
-    except Exception as _e:
-        st.sidebar.error(f"DEBUG → cannot read secrets: {_e}")
-        
-    # Drive restore/backup controls
-    _drive_init()
-    with st.sidebar.expander("Cloud Sync (Google Drive)"):
+        except Exception as _e:
+            st.caption(f"DEBUG → cannot read secrets: {_e}")
+
+        # Controls
         if GDRIVE_ENABLED:
             pulled = drive_pull(DB_PATH)
             if pulled:
                 st.success("Restored DB from Drive")
             else:
                 st.info("Using local DB (no Drive restore)")
+
             if st.button("⤴ Backup now"):
                 if drive_push(DB_PATH):
                     st.success("Backed up to Drive")
                 else:
                     st.warning("Backup failed")
+
             st.caption(f"AUTO_BACKUP: {'ON' if AUTO_BACKUP else 'OFF'} (configure in secrets)")
         else:
             st.caption("Drive not configured. Add gdrive secrets to enable restore/backup.")
 
+    # 3) App UI
     init_db()
     st.title("💼 Payroll App (SQLite + Google Drive)")
     st.caption("Employees • Attendance • Calendar • Bonuses • Deductions • Payroll • Payslip • Drive backup")
