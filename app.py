@@ -42,33 +42,21 @@ def _drive_init():
         if not cfg:
             return
         GDRIVE_FILE_ID = cfg.get("file_id")
+        sa_json_str = cfg.get("service_account_json")
         AUTO_BACKUP = bool(cfg.get("auto_backup", False))
-
-        sa_dict = None
-        # Method A: JSON string in secrets
-        if "service_account_json" in cfg:
-            sa_json_str = cfg.get("service_account_json")
-            sa_dict = json.loads(sa_json_str)
-        # Method B: TOML table in secrets
-        elif "service_account" in cfg:
-            sa_dict = dict(cfg.get("service_account"))
-
-        if not GDRIVE_FILE_ID or not sa_dict:
+        if not GDRIVE_FILE_ID or not sa_json_str:
             return
-
-        # Normalize private_key: convert "\n" to real newlines if necessary
-        if "private_key" in sa_dict and "\\n" in sa_dict["private_key"]:
-            sa_dict["private_key"] = sa_dict["private_key"].replace("\\n", "\n")
-
+        creds_dict = json.loads(sa_json_str)
         creds = ServiceAccountCredentials.from_json_keyfile_dict(
-            sa_dict, scopes=["https://www.googleapis.com/auth/drive"]
+            creds_dict,
+            scopes=["https://www.googleapis.com/auth/drive"]
         )
-        from pydrive2.drive import GoogleDrive
         _drive = GoogleDrive(creds)
         GDRIVE_ENABLED = True
     except Exception as e:
-        st.sidebar.error(f"Drive init failed: {e}")
+        st.sidebar.warning(f"Drive init failed: {e}")
         GDRIVE_ENABLED = False
+
 
 def drive_pull(local_path=DB_PATH):
     """Download payroll.db from Drive into local file."""
