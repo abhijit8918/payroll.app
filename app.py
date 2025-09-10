@@ -1,78 +1,139 @@
 # app.py — Payroll (Streamlit + SQLite) with Google Drive Restore/Backup
 # ---------------------------------------------------------------------
-# Features:
+# What’s included
 # - Employees (Add, Edit, Delete)
 # - Attendance (Single), Attendance (Calendar click-to-set)
 # - Bonuses, Deductions, Payroll, Payslip
-# - Google Drive "restore point": pull payroll.db on startup, push on demand (or auto if enabled)
+# - Google Drive sync:
+#     * Pull (restore) at startup + "Restore now" button
+#     * "Backup now" button
+#     * Optional auto-backup after each write (toggle via secrets)
 #
-# Deploy tips:
-# - Add your Drive secrets in .streamlit/secrets.toml (see template)
-# - On Streamlit Cloud, set the same secrets in the app settings
+# Secrets formats (Streamlit → Settings → Secrets) — either one works:
+#
+# A) JSON blob (easiest)
+# [gdrive]
+# file_id = "YOUR_FILE_ID"
+# auto_backup = false
+# service_account_json = """
+# { "type":"service_account", "project_id":"...", "private_key_id":"...",
+#   "private_key":"-----BEGIN PRIVATE KEY-----\n...ALL LINES...\n-----END PRIVATE KEY-----\n",
+#   "client_email":"...", "client_id":"...", "token_uri":"https://oauth2.googleapis.com/token" }
+# """
+#
+# B) TOML table (multi-line private_key)
+# [gdrive]
+# file_id = "YOUR_FILE_ID"
+# auto_backup = false
+# [gdrive.service_account]
+# type = "service_account"
+# project_id = "..."
+# private_key_id = "..."
+# private_key = """
+# -----BEGIN PRIVATE KEY-----
+# ... each line ...
+# -----END PRIVATE KEY-----
+# """
+# client_email = "..."
+# client_id = "..."
+# token_uri = "https://oauth2.googleapis.com/token"
+# (etc.)
 
 import streamlit as st
 import sqlite3
 import pandas as pd
 import io
+import os
+import json
+import time
 import calendar
-import json, time
 from datetime import date
 
-# ---- Google Drive sync (via pydrive2) ----
+# Google Drive
 from pydrive2.auth import ServiceAccountCredentials
 from pydrive2.drive import GoogleDrive
 
 DB_PATH = "payroll.db"
 LEAVE_DIVISOR = 30
 
-# ------------------ Google Drive helpers ------------------
-
+# ---- Drive globals
 GDRIVE_ENABLED = False
 GDRIVE_FILE_ID = None
 AUTO_BACKUP = False
 _drive = None
 _last_push_ts = 0
 PUSH_COOLDOWN_SEC = 2
+_last_drive_error = None  # for display
+
+# ------------------ Google Drive helpers ------------------
 
 def _drive_init():
-    """Initialize Google Drive client from Streamlit secrets."""
-    global GDRIVE_ENABLED, GDRIVE_FILE_ID, _drive, AUTO_BACKUP
+    """
+    Initialize Google Drive client from Streamlit secrets.
+    Supports:
+      - [gdrive] + service_account_json (JSON string)
+      - [gdrive] + [gdrive.service_account] (TOML table with multi-line private_key)
+    """
+    global GDRIVE_ENABLED, GDRIVE_FILE_ID, _drive, AUTO_BACKUP, _last_drive_error
+    GDRIVE_ENABLED = False
+    _last_drive_error = None
     try:
         cfg = st.secrets.get("gdrive", None)
         if not cfg:
-            return
+            _last_drive_error = "No [gdrive] section found in secrets."
+            return False
+
         GDRIVE_FILE_ID = cfg.get("file_id")
-        sa_json_str = cfg.get("service_account_json")
         AUTO_BACKUP = bool(cfg.get("auto_backup", False))
-        if not GDRIVE_FILE_ID or not sa_json_str:
-            return
-        creds_dict = json.loads(sa_json_str)
+        if not GDRIVE_FILE_ID:
+            _last_drive_error = "Missing gdrive.file_id in secrets."
+            return False
+
+        sa_dict = None
+        if "service_account_json" in cfg:
+            # Method A: JSON blob with \n inside the private key
+            sa_json_str = cfg.get("service_account_json")
+            sa_dict = json.loads(sa_json_str)
+        elif "service_account" in cfg:
+            # Method B: TOML table with multi-line private_key
+            sa_dict = dict(cfg.get("service_account"))
+        else:
+            _last_drive_error = "Missing service account credentials in secrets."
+            return False
+
+        # Normalize private_key if it contains literal "\n"
+        if "private_key" in sa_dict and "\\n" in sa_dict["private_key"]:
+            sa_dict["private_key"] = sa_dict["private_key"].replace("\\n", "\n")
+
         creds = ServiceAccountCredentials.from_json_keyfile_dict(
-            creds_dict,
-            scopes=["https://www.googleapis.com/auth/drive"]
+            sa_dict, scopes=["https://www.googleapis.com/auth/drive"]
         )
         _drive = GoogleDrive(creds)
         GDRIVE_ENABLED = True
+        return True
     except Exception as e:
-        st.sidebar.warning(f"Drive init failed: {e}")
+        _last_drive_error = f"{e}"
         GDRIVE_ENABLED = False
-
+        return False
 
 def drive_pull(local_path=DB_PATH):
-    """Download payroll.db from Drive into local file."""
-    if not GDRIVE_ENABLED: return False
+    """Download payroll.db from Google Drive into local file."""
+    if not GDRIVE_ENABLED:
+        return False
     try:
         f = _drive.CreateFile({"id": GDRIVE_FILE_ID})
         f.GetContentFile(local_path)
         return True
     except Exception as e:
-        st.sidebar.warning(f"Drive pull failed: {e}")
+        global _last_drive_error
+        _last_drive_error = f"Drive pull failed: {e}"
         return False
 
 def drive_push(local_path=DB_PATH):
-    """Upload local payroll.db to Drive (with small cooldown)."""
-    global _last_push_ts
-    if not GDRIVE_ENABLED: return False
+    """Upload local payroll.db to Google Drive (cooldown to reduce spam)."""
+    if not GDRIVE_ENABLED:
+        return False
+    global _last_push_ts, _last_drive_error
     if time.time() - _last_push_ts < PUSH_COOLDOWN_SEC:
         return False
     try:
@@ -82,10 +143,10 @@ def drive_push(local_path=DB_PATH):
         _last_push_ts = time.time()
         return True
     except Exception as e:
-        st.sidebar.warning(f"Drive push failed: {e}")
+        _last_drive_error = f"Drive push failed: {e}"
         return False
 
-# ------------------ DB Helpers ------------------
+# ------------------ SQLite helpers ------------------
 
 def get_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -214,7 +275,7 @@ def ui_employees():
         )
 
         if all_emps.empty:
-            st.info("No employees yet. Add an employee in the 'Add New' tab.")
+            st.info("No employees yet. Add one in the 'Add New' tab.")
         else:
             left, right = st.columns([1,2])
 
@@ -226,7 +287,6 @@ def ui_employees():
                 sel_emp = all_emps[all_emps.emp_id == emp_map[pick]].iloc[0]
 
             with right:
-                # --- Edit form ---
                 with st.form("edit_emp"):
                     c1, c2, c3 = st.columns(3)
                     emp_id_edit = c1.text_input("Emp ID *", value=sel_emp.emp_id, disabled=True)
@@ -385,11 +445,17 @@ def ui_attendance_calendar():
                 calmap[d] = "Present"
         st.success("Unset days filled as Present.")
 
-    csave1, _, csave3 = st.columns(3)
+    csave1, csave2, csave3 = st.columns(3)
     if csave1.button("Clear month (not saved)"):
         for d in calmap:
             calmap[d] = None
         st.warning("Cleared this month's statuses (not saved).")
+
+    if csave2.button("⤵ Restore now (pull from Drive)"):
+        if drive_pull(DB_PATH):
+            st.success("Restored DB from Drive (manual). Reloading calendar…")
+        else:
+            st.error(_last_drive_error or "Restore failed. Check secrets/sharing/file_id.")
 
     if csave3.button("💾 Save to database"):
         with get_conn() as conn:
@@ -555,12 +621,10 @@ def ui_payslip():
 def main():
     st.set_page_config(page_title="Payroll App (Drive Backup)", layout="wide")
 
-    # 1) Init Google Drive first
-    _drive_init()
-
-    # 2) One unified Cloud Sync expander (includes DEBUG temporarily)
+    # 1) Initialize Drive + try restore BEFORE opening DB
+    init_ok = _drive_init()
     with st.sidebar.expander("Cloud Sync (Google Drive)"):
-        # DEBUG (temporary)
+        # Debug signals (safe — does not leak secrets)
         try:
             gdr = st.secrets.get("gdrive", {})
             st.caption(f"DEBUG → gdrive keys: {list(gdr.keys())}")
@@ -569,26 +633,44 @@ def main():
         except Exception as _e:
             st.caption(f"DEBUG → cannot read secrets: {_e}")
 
-        # Controls
-        if GDRIVE_ENABLED:
-            pulled = drive_pull(DB_PATH)
-            if pulled:
-                st.success("Restored DB from Drive")
+        if init_ok:
+            if drive_pull(DB_PATH):
+                st.success("Restored DB from Drive (startup)")
             else:
                 st.info("Using local DB (no Drive restore)")
+                if _last_drive_error:
+                    st.caption(_last_drive_error)
 
-            if st.button("⤴ Backup now"):
+            c1, c2, c3 = st.columns(3)
+            if c1.button("⤴ Backup now"):
                 if drive_push(DB_PATH):
                     st.success("Backed up to Drive")
                 else:
-                    st.warning("Backup failed")
+                    st.error(_last_drive_error or "Backup failed")
 
-            st.caption(f"AUTO_BACKUP: {'ON' if AUTO_BACKUP else 'OFF'} (configure in secrets)")
+            if c2.button("⤵ Restore now"):
+                if drive_pull(DB_PATH):
+                    st.success("Restored DB from Drive (manual)")
+                else:
+                    st.error(_last_drive_error or "Restore failed")
+
+            # Handy: download the DB file for your own manual backup
+            if os.path.exists(DB_PATH):
+                with open(DB_PATH, "rb") as f:
+                    st.download_button("Download DB (payroll.db)", f, file_name="payroll.db")
+
+            st.caption(f"AUTO_BACKUP: {'ON' if AUTO_BACKUP else 'OFF'} (set in secrets)")
+
         else:
-            st.caption("Drive not configured. Add gdrive secrets to enable restore/backup.")
+            st.error("Drive init failed — using local DB only.")
+            if _last_drive_error:
+                st.caption(f"Reason: {_last_drive_error}")
+            st.caption("Check secrets format and that the Drive file is shared with your service account (Editor).")
 
-    # 3) App UI
+    # 2) Now ensure DB schema exists
     init_db()
+
+    # 3) UI
     st.title("💼 Payroll App (SQLite + Google Drive)")
     st.caption("Employees • Attendance • Calendar • Bonuses • Deductions • Payroll • Payslip • Drive backup")
 
@@ -596,7 +678,6 @@ def main():
         "Go to",
         ["Employees","Attendance","Attendance (Calendar)","Bonuses","Deductions","Payroll","Payslip"]
     )
-
     if section == "Employees":
         ui_employees()
     elif section == "Attendance":
