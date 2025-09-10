@@ -276,13 +276,14 @@ def ui_employees():
                     ))
                     st.success("Employee saved/updated.")
 
+      # --- Edit / Delete ---
     with tab_edit:
         all_emps = df_from_query(
             "SELECT emp_id,name,role,salary_type,monthly_salary,per_day_rate,doj,active,bank FROM employees ORDER BY emp_id"
         )
 
         if all_emps.empty:
-            st.info("No employees yet. Add one in the 'Add New' tab.")
+            st.info("No employees yet. Add an employee in the 'Add New' tab.")
         else:
             left, right = st.columns([1,2])
 
@@ -294,6 +295,7 @@ def ui_employees():
                 sel_emp = all_emps[all_emps.emp_id == emp_map[pick]].iloc[0]
 
             with right:
+                # --- Edit Form ---
                 with st.form("edit_emp"):
                     c1, c2, c3 = st.columns(3)
                     emp_id_edit = c1.text_input("Emp ID *", value=sel_emp.emp_id, disabled=True)
@@ -328,12 +330,12 @@ def ui_employees():
                         ))
                         st.success("Employee updated.")
 
+                # --- Delete Section (outside the form) ---
                 st.markdown("---")
                 with st.expander("🗑 Delete this employee"):
                     st.warning("Deleting an employee does NOT automatically delete related attendance/bonuses/deductions unless you choose so below.")
                     also_delete = st.checkbox("Also delete this employee's attendance, bonuses, and deductions")
-                    st.caption(f"Emp ID to confirm: **{emp_id_edit}**")
-                    confirm = st.text_input("Type the Emp ID to confirm delete")
+                    confirm = st.text_input("Type the Emp ID to confirm delete", value="")
                     if st.button("Delete Employee"):
                         if confirm != emp_id_edit:
                             st.error("Confirmation text does not match Emp ID.")
